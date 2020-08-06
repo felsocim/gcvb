@@ -120,4 +120,6 @@ def write_script(tests, config, data_root, base_id, run_id, *, job_file="job.sh"
         f.write("python3 -m gcvb db end_run {0} -1 -1 \n".format(run_id))
 
 def launch(job_file, config):
-    subprocess.Popen([config["submit_command"], job_file])
+    raw_submit_command = config["submit_command"]
+    submit_command = raw_submit_command.replace("%f", job_file)
+    subprocess.Popen(submit_command.split(" "))
