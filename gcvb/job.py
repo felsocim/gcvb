@@ -122,4 +122,4 @@ def write_script(tests, config, data_root, base_id, run_id, *, job_file="job.sh"
 def launch(job_file, config):
     raw_submit_command = config["submit_command"]
     submit_command = raw_submit_command.replace("%f", job_file)
-    subprocess.Popen(submit_command.split(" "))
+    subprocess.Popen(submit_command, shell = True)
