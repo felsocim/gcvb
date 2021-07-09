@@ -1,7 +1,6 @@
 import dash
 import dash_html_components as html
 import dash_bootstrap_components as dbc
-import gcvb.validation as val
 import gcvb.db as db
 import gcvb.job as job
 import gcvb.yaml_input as yaml_input
@@ -11,73 +10,99 @@ if __name__ == '__main__':
 else:
     from ..app import app
 from dash.dependencies import Input, Output
-from .loader import loader
+from gcvb.loader import loader as loader
+import gcvb.model as model
+
+def _fill_files(d, taskorval, ajc, fromtype):
+    d[fromtype] = [
+        {
+            "id": f["id"],
+            "file": job.format_launch_command(f["file"], loader.config, ajc),
+        }
+        for f in taskorval.get("serve_" + fromtype, [])
+    ]
 
 #Data
 def data_preparation(run, test_id):
-    run_summary=db.retrieve_test(run,test_id)
-    base = loader.load_base(run)
-
-    test = base["Tests"][test_id]
+    test = run.Tests[test_id]
 
     data = {}
-    data["base_id"] = db.get_base_from_run(run)
+    data["base_id"] = run.base_id
     data["Tasks"] = []
     data["test_id"] = test_id
-    data["description"] = test.get("description","")
-    data["status"] = "success"
+    data["description"] = test.raw_dict.get("description","")
+    data["data_directory"] = test.raw_dict.get("data")
 
-    for i,task in enumerate(test["Tasks"]):
+    for i,task_obj in enumerate(test.Tasks):
+        task = task_obj.raw_dict #FIXME quickway to have old behaviour
         ajc = {}
         job.fill_at_job_creation_task(ajc, task, f"{test_id}_{i}", loader.config)
         d = {}
         data["Tasks"].append(d)
+        d["status"] = task_obj.status
         d["executable"] = task["executable"]
         d["options"] = task["options"]
         d["metrics"] = []
-        d["from_results"] = [{"id" : f["id"],
-                              "file" : job.format_launch_command(f["file"], loader.config, ajc)}
-                             for f in task.get("serve_from_results",[])]
-        for validation in task.get("Validations",[]):
-            job.fill_at_job_creation_validation(ajc, validation,
-                                                loader.data_root,  test["data"],
+        d["elapsed"] = task_obj.hr_elapsed()
+        _fill_files(d, task, ajc, "from_results")
+        _fill_files(d, task, ajc, "from_db")
+        for validation in task_obj.Validations:
+            job.fill_at_job_creation_validation(ajc, validation.raw_dict,
+                                                loader.data_root,  test.raw_dict["data"],
                                                 loader.config, loader.references)
-            v = {}
-            d["metrics"].append(v)
-            v["id"]=validation["id"]
-            v["type"]=validation.get("type","file_comparison")
-            v["tolerance"]=validation["tolerance"]
-            v["distance"]=run_summary["metrics"].get(v["id"],"N/A") #Todo, it's ok only for file comparison...
-            if v["distance"]=="N/A":
-                data["status"]="failure"
-            elif float(v["distance"])>float(v["tolerance"]):
-                data["status"]="failure"
-            v["from_results"] = [{"id" : f["id"],
-                                  "file" : job.format_launch_command(f["file"], loader.config, ajc)}
-                                 for f in validation.get("serve_from_results",[])]
+            for metric_id, metric in validation.expected_metrics.items():
+                v = {}
+                d["metrics"].append(v)
+                v["id"]=metric_id
+                v["type"]=metric.type
+                if validation.type == "file_comparison":
+                    id_str = validation.filename if validation.filename else validation.ref_id
+                    v["id"] = f"{metric_id} ({validation.base}/{id_str})"
+                    v["type"] = "file_comparison"
+                v["tolerance"]=metric.tolerance
+                if metric_id in validation.recorded_metrics:
+                    v["distance"] = metric.distance(validation.recorded_metrics[metric_id])
+                else:
+                    v["distance"] = "N/A"
+                _fill_files(v, validation.raw_dict, ajc, "from_results")
+                _fill_files(v, validation.raw_dict, ajc, "from_db")
+            for metric_id, recorded_value in validation.get_untracked_metrics().items():
+                m = {}
+                d["metrics"].append(m)
+                m["id"] = metric_id
+                m["type"] = "untracked"
+                m["tolerance"] = "Untracked"
+                m["distance"] = recorded_value
+                m["from_results"]=[]
     return data
+
+
+def _metrics_file_links(m, data):
+    test_id = data["test_id"]
+    l = []
+    for t, url in [("from_results", "files"), ("from_db", "dbfiles")]:
+        for f in m[t]:
+            l.append(
+                html.A(
+                    href=f"/{url}/{data['base_id']}/{test_id}/{f['file']}",
+                    children=f["id"],
+                )
+            )
+            l.append(", ")
+    return [" ("] + l[:-1] + [")"] if l else l
+
 
 #Content
 def metric_table(data, list_of_metrics):
     test_id = data["test_id"]
-
-    h=[("Metric","55%"),("Type","25%"),("Distance","8%"),("Target","8%"),("H","2%")]
-    header=html.Tr([html.Th(col, style={"width" : width}) for col,width in h])
+    header = html.Tr(
+        [html.Th("Metric", style={"width": "100%"})]
+        + [html.Th(col) for col in ["Type", "Distance", "Target", "H"]]
+    )
 
     rows = []
     for m in list_of_metrics:
-        row = []
-
-        if m["from_results"]:
-            l = []
-            for f in m["from_results"]:
-                l.append(html.A(href=f"/files/{data['base_id']}/{test_id}/{f['file']}", children=f["id"]))
-                l.append(", ")
-            cell = html.Td([m["id"]]+[" ("]+l[:-1]+[")"])
-        else:
-            cell = html.Td(m["id"])
-        row.append(cell)
-
+        row = [html.Td([m["id"]] + _metrics_file_links(m, data))]
         for col in ["type", "distance", "tolerance"]:
             cell = html.Td(m[col])
             row.append(cell)
@@ -89,6 +114,8 @@ def metric_table(data, list_of_metrics):
         style=""
         if (m["distance"]=="N/A"):
             style="table-warning"
+        elif(m["tolerance"]=="Untracked"):
+            style="table-info"
         elif (float(m["distance"])>float(m["tolerance"])):
             style="table-danger"
 
@@ -96,38 +123,41 @@ def metric_table(data, list_of_metrics):
     return html.Table(html.Tbody([header]+rows,className="table table-sm table-bordered"))
 
 def summary_panel(data):
-    description_block=html.Div([html.H5("Description"),html.P(data["description"])],id="description")
-    return description_block
+    description_block=html.Div([html.H4("Description"),html.P(data["description"])],id="description")
+    data_dir=html.Div([html.H4("Data Directory"), html.P(data["data_directory"])])
+    return html.Div([description_block, data_dir])
 
 def details_panel(data):
     el_list = []
     for c,t in enumerate(data["Tasks"], 1):
-        el_list.append(html.H6("{!s} - {} {}".format(c,t["executable"],t["options"])))
-        if t["from_results"]:
-            l = ["Files :"]
-            for f in t["from_results"]:
-                l.append(" ")
-                l.append(html.A(href=f"/files/{data['base_id']}/{data['test_id']}/{f['file']}", children=f["id"]))
-            el_list.append(html.Span(l))
+        el_list.append(html.Code("{} {}".format(t["executable"],t["options"])))
+        files = _metrics_file_links(t, data)
+        if files:
+            el_list.append(html.Span(files))
+        if t["status"] >= 0:
+            el_list.append(html.Span([" Exit code: ", t["status"], f"({t['elapsed']})"]))
         if t["metrics"]:
             el_list.append(metric_table(data, t["metrics"]))
-    return html.Div([html.H5("Details"),*el_list])
+        el_list.append(html.Hr())
+    return html.Div([html.H4("Details"),*el_list])
+
+def status_to_badge(test):
+    if test.failed:
+        return html.Span("Failure",className="badge badge-danger")
+    if not(test.completed):
+        return html.Span("In progress",className="badge badge-info")
+    if test.success:
+        return html.Span("Success",className="badge badge-success")
+    raise ValueError("Unexpected")
 
 #Page Generator
 def gen_page(run_id, test_id):
-    run_summary=db.retrieve_test(run_id,test_id)
-    base = loader.load_base(run_id)
-    r=db.load_report(run_id)
-    report=val.Report(base,r)
-    #return dbc.Container(metric_table(report.success[test_id]))
-    #return dbc.Container(str((run_summary,base["Tests"][test_id])))
-
-    data=data_preparation(run_id,test_id)
+    run = model.Run(run_id)
+    data=data_preparation(run,test_id)
 
     #Title + Badge
-    status_str=html.Span("Success",className="badge badge-success")
-    if data["status"]!="success":
-        status_str=html.Span("Failure",className="badge badge-danger")
+    status_str=status_to_badge(run.Tests[test_id])
+
     title=html.H1([data["test_id"]+" ",status_str])
     res=dbc.Container([title,summary_panel(data),details_panel(data)])
     return res
