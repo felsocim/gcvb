@@ -1,4 +1,5 @@
 import argparse
+from copy import Error
 import yaml
 import re
 import os
@@ -52,9 +53,11 @@ def parse():
     parser_compute.add_argument("--gcvb-base",metavar="base_id",help="choose a specific base (default: last one created)", default=None)
     parser_compute.add_argument("--header", metavar="file", help="use file as header when generating job script", default=None)
     parser_compute.add_argument("--chain", action="store_true", help="stricter dependencies between tasks and validation")
+    parser_compute.add_argument("--wait-after-submitting", action="store_true", help="wait for the submitted job to complete before submitting the next one", default=False)
     group = parser_compute.add_mutually_exclusive_group()
     group.add_argument("--dry-run", action="store_true", help="do not launch the job.")
     group.add_argument("--with-jobrunner", metavar="num_cores", type=int, help="use a jobrunner instead of one submitted job with <num_cores>", default=None)
+    group.add_argument("--validate-only",action="store_true",help="re-run the validation tasks of already finished tests", default=False)
     parser_compute.add_argument("--started-first", action="store_true", help="already started tests are launched with a higher priority (--with-jobrunner required)")
     parser_compute.add_argument("--verbose", action="store_true", help="display informations (--with-jobrunner required)")
     parser_compute.add_argument("--max-concurrent", metavar="jobs", type=int, help="maxium jobs that can be executed concurrently by a jobrunner (--with-jobrunner required)", default=0)
@@ -161,22 +164,40 @@ def main():
 
     if args.command=="compute":
         gcvb_id=args.gcvb_base
-        config=util.open_yaml("config.yaml")
+
+        if os.path.exists("config.yaml"):
+            config = util.open_yaml("config.yaml")
+        else:
+            config = {
+                "machine_id": platform.node(),
+                "executables": {},
+                "submit_command": "bash",
+                "va_submit_command": "bash"
+            }
+
         config_id=config.get("machine_id")
+
         if not(gcvb_id):
             gcvb_id=db.get_last_gcvb()
+
+        if args.validate_only and not(db.has_run(gcvb_id)):
+            raise Error("There is no previous run for the base id {}!".format(str(gcvb_id)))
+        
         run_id=db.add_run(gcvb_id,config_id)
+
         computation_dir="./results/{}".format(str(gcvb_id))
         a=yaml_input.load_yaml(os.path.join(computation_dir,"tests.yaml"))
+        
         a=filter_tests(args,a)
-
         all_tests=[t for p in a["Packs"] for t in p["Tests"]]
         db.add_tests(run_id, all_tests, args.chain)
+
         job_file=os.path.join(computation_dir,"job.sh")
-        data_root=a["data_root"]
-        job.write_script(all_tests, config, data_root, gcvb_id, run_id, job_file=job_file, header=args.header)
+        data_root=a["data_root"]        
+        job.write_script(all_tests, config, data_root, gcvb_id, run_id, job_file=job_file, header=args.header, validate_only=args.validate_only)
+
         if not(args.dry_run) and not(args.with_jobrunner):
-            job.launch(job_file,config)
+            job.launch(job_file,config,args.validate_only,args.wait_after_submitting)
         if (args.with_jobrunner):
             j=jobrunner.JobRunner(args.with_jobrunner, run_id, config, args.started_first, args.max_concurrent, args.verbose)
             j.run()

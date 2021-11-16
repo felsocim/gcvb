@@ -190,6 +190,18 @@ def get_last_run(cursor):
     return (res["id"],res["gcvb_id"])
 
 @with_connection
+def has_run(cursor, gcvb_id):
+    cursor.execute(
+        "SELECT * from run WHERE gcvb_id = ? AND end_date IS NOT NULL ORDER BY id DESC LIMIT 1",
+        [gcvb_id]
+    )
+    res=cursor.fetchone()
+    if res is None:
+        return False
+    else:
+        return True
+
+@with_connection
 def load_report(cursor, run_id):
     a="""SELECT metric, value, name
          FROM valid

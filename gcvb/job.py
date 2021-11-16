@@ -82,7 +82,7 @@ def fill_at_job_creation_validation(at_job_creation, validation, data_root, ref_
     at_job_creation["nprocs"]=validation.get("nprocs","1") # should we default to one or impose definition ?
     at_job_creation["nthreads"]=validation.get("nthreads","1")
 
-def write_script(tests, config, data_root, base_id, run_id, *, job_file="job.sh", header=None):
+def write_script(tests, config, data_root, base_id, run_id, *, job_file="job.sh", header=None, validate_only=False):
     valid=yaml_input.get_references(tests,data_root)
     with open(job_file,'w') as f:
         if (header):
@@ -104,8 +104,9 @@ def write_script(tests, config, data_root, base_id, run_id, *, job_file="job.sh"
                 f.write("python3 -m gcvb db start_task {0} {1} 0\n".format(test["id_db"],step))
                 at_job_creation={}
                 fill_at_job_creation_task(at_job_creation, t, test["id"]+"_"+str(c), config)
-                f.write(format_launch_command(t["launch_command"],config,at_job_creation))
-                f.write("\n")
+                if not(validate_only):
+                    f.write(format_launch_command(t["launch_command"],config,at_job_creation))
+                    f.write("\n")
                 f.write("python3 -m gcvb db end_task {0} {1} $?\n".format(test["id_db"],step))
                 for d,v in enumerate(t.get("Validations",[])):
                     step += 1
@@ -119,5 +120,11 @@ def write_script(tests, config, data_root, base_id, run_id, *, job_file="job.sh"
         f.write("cd ../..\n")
         f.write("python3 -m gcvb db end_run {0} -1 -1 \n".format(run_id))
 
-def launch(job_file, config):
-    subprocess.Popen([config["submit_command"], job_file])
+def launch(job_file, config, validate_only=False, wait_after_submitting=False):
+    submit_command = config["submit_command"]
+    if validate_only:
+        submit_command = config["va_submit_command"]
+
+    process = subprocess.Popen([submit_command, job_file])
+    if wait_after_submitting:
+        process.wait()
