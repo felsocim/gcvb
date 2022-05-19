@@ -54,6 +54,7 @@ def parse():
     parser_compute.add_argument("--header", metavar="file", help="use file as header when generating job script", default=None)
     parser_compute.add_argument("--chain", action="store_true", help="stricter dependencies between tasks and validation")
     parser_compute.add_argument("--wait-after-submitting", action="store_true", help="wait for the submitted job to complete before submitting the next one", default=False)
+    parser_compute.add_argument("--with-singularity", metavar="singularity", help="execute all commands in job script within a Singularity container (use this option to specify a complete Singularity command to prefix gcvb commands in job files with, e.g. 'singularity exec -e my-image.sif my-command')", default=None)
     group = parser_compute.add_mutually_exclusive_group()
     group.add_argument("--dry-run", action="store_true", help="do not launch the job.")
     group.add_argument("--with-jobrunner", metavar="num_cores", type=int, help="use a jobrunner instead of one submitted job with <num_cores>", default=None)
@@ -193,8 +194,8 @@ def main():
         db.add_tests(run_id, all_tests, args.chain)
 
         job_file=os.path.join(computation_dir,"job.sh")
-        data_root=a["data_root"]        
-        job.write_script(all_tests, config, data_root, gcvb_id, run_id, job_file=job_file, header=args.header, validate_only=args.validate_only)
+        data_root=a["data_root"]
+        job.write_script(all_tests, config, data_root, gcvb_id, run_id, job_file=job_file, header=args.header, validate_only=args.validate_only, singularity=args.with_singularity)
 
         if not(args.dry_run) and not(args.with_jobrunner):
             job.launch(job_file,config,args.validate_only,args.wait_after_submitting)
