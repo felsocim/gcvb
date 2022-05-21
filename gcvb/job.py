@@ -53,7 +53,7 @@ def format_launch_command(format_string, config, at_job_creation):
     d={"@job_creation" : at_job_creation, "@executable" : executable}
     return format_string.format(**d)
 
-def fill_at_job_creation_task(at_job_creation, task, full_id, config):
+def fill_at_job_creation_task(at_job_creation, task, full_id, config, singularity):
     at_job_creation["nthreads"]=task["nthreads"]
     at_job_creation["nprocs"]=task["nprocs"]
     at_job_creation["full_id"]=full_id #test["id"]+"_"+str(c)
@@ -61,9 +61,13 @@ def fill_at_job_creation_task(at_job_creation, task, full_id, config):
     if task["executable"] in config["executables"]:
         at_job_creation["executable"]=config["executables"][task["executable"]]
     at_job_creation["options"]=task.get("options","")
+    if singularity:
+        at_job_creation["singularity"]=" ".join(config["singularity"])
+    else:
+        at_job_creation["singularity"]=""
     return None
 
-def fill_at_job_creation_validation(at_job_creation, validation, data_root, ref_data, config, valid):
+def fill_at_job_creation_validation(at_job_creation, validation, data_root, ref_data, config, valid, singularity):
     at_job_creation["va_id"]=validation["id"]
     at_job_creation["va_executable"]=validation["executable"]
     if validation["type"]=="file_comparison":
@@ -81,12 +85,16 @@ def fill_at_job_creation_validation(at_job_creation, validation, data_root, ref_
         at_job_creation["va_executable"]=config["executables"][validation["executable"]]
     at_job_creation["nprocs"]=validation.get("nprocs","1") # should we default to one or impose definition ?
     at_job_creation["nthreads"]=validation.get("nthreads","1")
+    if singularity:
+        at_job_creation["singularity"]=" ".join(config["singularity"])
+    else:
+        at_job_creation["singularity"]=""
 
-def write_script(tests, config, data_root, base_id, run_id, *, job_file="job.sh", header=None, validate_only=False, singularity=None):
+def write_script(tests, config, data_root, base_id, run_id, *, job_file="job.sh", header=None, validate_only=False, singularity=False):
     valid=yaml_input.get_references(tests,data_root)
     singularity_prefix = ""
-    if singularity != None:
-        singularity_prefix = singularity + " "
+    if singularity:
+        singularity_prefix = " ".join(config["singularity"]) + " "
     with open(job_file,'w') as f:
         if (header):
             with open(header, 'r') as h:
@@ -97,7 +105,7 @@ def write_script(tests, config, data_root, base_id, run_id, *, job_file="job.sh"
         f.write("cd results/{0}\n".format(str(base_id)))
         for test in tests:
             f.write("\n#TEST {}\n".format(test["id"]))
-            if singularity == None:
+            if not singularity:
                 f.write("export GCVB_RUN_ID={!s}\n".format(run_id))
                 f.write("export GCVB_TEST_ID={!s}\n".format(test["id_db"]))
             f.write("cd {0}\n".format(test["id"]))
@@ -107,7 +115,7 @@ def write_script(tests, config, data_root, base_id, run_id, *, job_file="job.sh"
                 step += 1
                 f.write(singularity_prefix + "python3 -m gcvb db start_task {0} {1} 0\n".format(test["id_db"],step))
                 at_job_creation={}
-                fill_at_job_creation_task(at_job_creation, t, test["id"]+"_"+str(c), config)
+                fill_at_job_creation_task(at_job_creation, t, test["id"]+"_"+str(c), config, singularity)
                 if not(validate_only):
                     f.write(format_launch_command(t["launch_command"],config,at_job_creation))
                     f.write("\n")
@@ -115,10 +123,13 @@ def write_script(tests, config, data_root, base_id, run_id, *, job_file="job.sh"
                 for d,v in enumerate(t.get("Validations",[])):
                     step += 1
                     f.write(singularity_prefix + "python3 -m gcvb db start_task {0} {1} 0\n".format(test["id_db"],step))
-                    fill_at_job_creation_validation(at_job_creation, v, data_root, test["data"], config, valid)
+                    fill_at_job_creation_validation(at_job_creation, v, data_root, test["data"], config, valid, singularity)
+                    if singularity:
+                        va_command_pieces=v["launch_command"].split()
+                        va_command_pieces.insert(va_command_pieces.index("{@job_creation[singularity]}") + 1, "bash -c 'export GCVB_RUN_ID={0} GCVB_TEST_ID={1} &&".format(run_id,test["id_db"]))
+                        v["launch_command"]=" ".join(va_command_pieces)
+                        v["launch_command"]+="'"
                     va_command = format_launch_command(v["launch_command"],config,at_job_creation)
-                    if singularity != None:
-                        va_command = "bash -c 'export GCVB_RUN_ID={0} GCVB_TEST_ID={1}".format(run_id,test["id_db"]) + " && " + va_command + "'"
                     f.write(va_command)
                     f.write("\n")
                     f.write(singularity_prefix + "python3 -m gcvb db end_task {0} {1} $?\n".format(test["id_db"],step))

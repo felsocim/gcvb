@@ -1,6 +1,6 @@
 class job_creation_dict(dict):
     def __missing__(self, key):
-        if key in ["nthreads","nprocs","full_id","executable","executable","options","va_id","va_executable","va_filename","va_refdir","va_executable"]:
+        if key in ["nthreads","nprocs","full_id","executable","executable","options","va_id","va_executable","va_filename","va_refdir","va_executable","singularity"]:
             return "{{@job_creation[{}]}}".format(key)
         else:
             raise KeyError(key)
