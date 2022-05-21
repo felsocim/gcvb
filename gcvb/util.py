@@ -2,7 +2,7 @@ import yaml
 try:
     from yaml import CLoader as Loader, CDumper as Dumper
 except ImportError:
-    print("Warning pyaml : CLoader not avalaible. Slower Python Loader is used instead...")
+    print("Warning pyaml : CLoader not available. Slower Python Loader is used instead...")
     from yaml import Loader, Dumper
 import gzip
 import shutil
