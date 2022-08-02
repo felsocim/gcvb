@@ -215,8 +215,6 @@ def main():
         j=jobrunner.JobRunner(num_cores, run_id, config, args.started_first, args.max_concurrent, args.verbose)
         j.run()
 
-
-
     if args.command=="db":
         if args.db_command=="start_run":
             db.start_run(args.first)
