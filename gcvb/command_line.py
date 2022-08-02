@@ -52,7 +52,9 @@ def parse():
     group.add_argument("-H","--human-readable", action="store_true", help="get test list in a concise way.")
 
     parser_compute.add_argument("--gcvb-base",metavar="base_id",help="choose a specific base (default: last one created)", default=None)
-    parser_compute.add_argument("--header", metavar="file", help="use file as header when generating job script", default=None)
+    group = parser_compute.add_mutually_exclusive_group()
+    group.add_argument("--header", metavar="file", help="use file as header when generating job script", default=None)
+    group.add_argument("--local-header", action="store_true", help="use 'local_header' defined in configuration as header when generating job script. Here, it is assumed that the header file is present in job directory at launch. When multiple benchmarks are selected, the header corresponding to the first benchmarks is considered.", default=False)
     parser_compute.add_argument("--chain", action="store_true", help="stricter dependencies between tasks and validation")
     parser_compute.add_argument("--wait-after-submitting", action="store_true", help="wait for the submitted job to complete before submitting the next one", default=False)
     parser_compute.add_argument("--with-singularity", action="store_true", help="execute all commands in job script within a Singularity container")
@@ -178,6 +180,7 @@ def main():
                 "executables": {},
                 "submit_command": "bash",
                 "va_submit_command": "bash",
+                "local_header": "sbatch",
                 "singularity": []
             }
 
@@ -202,7 +205,9 @@ def main():
         data_root=a["data_root"]
         job.write_script(
             all_tests, config, data_root, gcvb_id, run_id,
-            job_file=job_file, header=args.header, validate_only=args.validate_only,
+            job_file=job_file, header=args.header,
+            local_header=config["local_header"] if args.local_header == True else None,
+            validate_only=args.validate_only,
             singularity=args.with_singularity
         )
 

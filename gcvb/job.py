@@ -90,7 +90,7 @@ def fill_at_job_creation_validation(at_job_creation, validation, data_root, ref_
     else:
         at_job_creation["singularity"]=""
 
-def write_script(tests, config, data_root, base_id, run_id, *, job_file="job.sh", header=None, validate_only=False, singularity=False):
+def write_script(tests, config, data_root, base_id, run_id, *, job_file="job.sh", header=None, local_header=None, validate_only=False, singularity=False):
     valid=yaml_input.get_references(tests,data_root)
     singularity_prefix = ""
     if singularity:
@@ -98,6 +98,11 @@ def write_script(tests, config, data_root, base_id, run_id, *, job_file="job.sh"
     with open(job_file,'w') as f:
         if (header):
             with open(header, 'r') as h:
+                for line in h:
+                    f.write(line)
+            f.write("\n")
+        if (local_header):
+            with open("results/{0}/{1}/{2}".format(str(base_id), tests[0]["id"], local_header), 'r') as h:
                 for line in h:
                     f.write(line)
             f.write("\n")
