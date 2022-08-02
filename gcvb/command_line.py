@@ -37,7 +37,7 @@ def parse():
     parser_report = subparsers.add_parser('report', help="get a report regarding a gcvb run")
     parser_dashboard = subparsers.add_parser('dashboard', help="launch a Dash instance to browse results" )
     parser_snippet = snippet.generate_parser(subparsers)
-    parser_generate_refs = subparsers.add_parser('generate_refs', help="generate references from a base where a computation as already been executed.")
+    parser_generate_refs = subparsers.add_parser('generate_refs', help="generate references from a base where a computation has already been executed.")
     parser_jobrunner = subparsers.add_parser("jobrunner", help="jobrunner to launch tests in parallel")
 
     parser_generate.add_argument('--data-root',metavar="dir",default=None)
