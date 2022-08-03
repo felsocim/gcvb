@@ -52,6 +52,7 @@ def parse():
     group.add_argument("-H","--human-readable", action="store_true", help="get test list in a concise way.")
 
     parser_compute.add_argument("--gcvb-base",metavar="base_id",help="choose a specific base (default: last one created)", default=None)
+    parser_compute.add_argument("--by-batch", action="store_true", help="launch each test-batch as a separate job", default=False)
     group = parser_compute.add_mutually_exclusive_group()
     group.add_argument("--header", metavar="file", help="use file as header when generating job script", default=None)
     group.add_argument("--local-header", action="store_true", help="use 'local_header' defined in configuration as header when generating job script. Here, it is assumed that the header file is present in job directory at launch. When multiple benchmarks are selected, the header corresponding to the first benchmarks is considered.", default=False)
@@ -191,31 +192,45 @@ def main():
 
         if args.validate_only and not(db.has_run(gcvb_id)):
             raise Error("There is no previous run for the base id {}!".format(str(gcvb_id)))
-        
-        run_id=db.add_run(gcvb_id,config_id)
 
         computation_dir="./results/{}".format(str(gcvb_id))
         a=yaml_input.load_yaml(os.path.join(computation_dir,"tests.yaml"))
         
         a=filter_tests(args,a)
         all_tests=[t for p in a["Packs"] for t in p["Tests"]]
-        db.add_tests(run_id, all_tests, args.chain)
+        all_batches=[]
+        nbr_batches=1
 
-        job_file=os.path.join(computation_dir,"job.sh")
-        data_root=a["data_root"]
-        job.write_script(
-            all_tests, config, data_root, gcvb_id, run_id,
-            job_file=job_file, header=args.header,
-            local_header=config["local_header"] if args.local_header == True else None,
-            validate_only=args.validate_only,
-            singularity=args.with_singularity
-        )
+        if(args.by_batch):
+            all_batches=[t["batch"] for t in all_tests]
+            nbr_batches=len(all_batches)
 
-        if not(args.dry_run) and not(args.with_jobrunner):
-            job.launch(job_file,config,args.validate_only,args.wait_after_submitting)
-        if (args.with_jobrunner):
-            j=jobrunner.JobRunner(args.with_jobrunner, run_id, config, args.started_first, args.max_concurrent, args.verbose)
-            j.run()
+        for i in range(nbr_batches):
+            run_id=db.add_run(gcvb_id,config_id)
+            batch_tests=all_tests
+
+            if(args.by_batch):
+                job_file=os.path.join(computation_dir,"{}.sh".format(all_batches[i]))
+                batch_tests=[t for t in all_tests if re.match(all_batches[i], t["id"])]
+            else:
+                job_file=os.path.join(computation_dir,"job.sh")            
+
+            db.add_tests(run_id, batch_tests, args.chain)
+
+            data_root=a["data_root"]
+            job.write_script(
+                batch_tests, config, data_root, gcvb_id, run_id,
+                job_file=job_file, header=args.header,
+                local_header=config["local_header"] if args.local_header == True else None,
+                validate_only=args.validate_only,
+                singularity=args.with_singularity
+            )
+
+            if not(args.dry_run) and not(args.with_jobrunner):
+                job.launch(job_file,config,args.validate_only,args.wait_after_submitting)
+            if (args.with_jobrunner):
+                j=jobrunner.JobRunner(args.with_jobrunner, run_id, config, args.started_first, args.max_concurrent, args.verbose)
+                j.run()
 
     if args.command=="jobrunner":
         run_id,gcvb_id=db.get_last_run() #run chosen should be modifiable
