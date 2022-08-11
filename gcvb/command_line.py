@@ -202,8 +202,10 @@ def main():
         nbr_batches=1
 
         if(args.by_batch):
-            all_batches=[t["batch"] for t in all_tests]
+            # Make the list of batch identifiers unique (multiple jobs may belong to a given batch).
+            all_batches=list(dict.fromkeys([t["batch"] for t in all_tests]))
             nbr_batches=len(all_batches)
+            print(str(nbr_batches))
 
         for i in range(nbr_batches):
             run_id=db.add_run(gcvb_id,config_id)
