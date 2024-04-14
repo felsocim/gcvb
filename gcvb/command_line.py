@@ -52,7 +52,9 @@ def parse():
     group.add_argument("-H","--human-readable", action="store_true", help="get test list in a concise way.")
 
     parser_compute.add_argument("--gcvb-base",metavar="base_id",help="choose a specific base (default: last one created)", default=None)
-    parser_compute.add_argument("--by-batch", action="store_true", help="launch each test-batch as a separate job", default=False)
+    group = parser_compute.add_mutually_exclusive_group()
+    group.add_argument("--by-batch", action="store_true", help="launch each test-batch as a separate job", default=False)
+    group.add_argument("--by-test", action="store_true", help="launch each test as a separate job", default=False)
     group = parser_compute.add_mutually_exclusive_group()
     group.add_argument("--header", metavar="file", help="use file as header when generating job script", default=None)
     group.add_argument("--local-header", action="store_true", help="use 'local_header' defined in configuration as header when generating job script. Here, it is assumed that the header file is present in job directory at launch. When multiple benchmarks are selected, the header corresponding to the first benchmarks is considered.", default=False)
@@ -198,30 +200,35 @@ def main():
         
         a=filter_tests(args,a)
         all_tests=[t for p in a["Packs"] for t in p["Tests"]]
-        all_batches=[]
-        nbr_batches=1
+        all_batch_jobs=[]
+        nbr_batch_jobs=1
 
         if(args.by_batch):
             # Make the list of batch identifiers unique (multiple jobs may belong to a given batch).
-            all_batches=list(dict.fromkeys([t["batch"] for t in all_tests]))
-            nbr_batches=len(all_batches)
-            print(str(nbr_batches))
+            all_batch_jobs=list(dict.fromkeys([t["batch"] for t in all_tests]))
+            nbr_batch_jobs=len(all_batch_jobs)
+        elif(args.by_test):
+            all_batch_jobs=all_tests
+            nbr_batch_jobs=len(all_batch_jobs)
 
-        for i in range(nbr_batches):
+        for i in range(nbr_batch_jobs):
             run_id=db.add_run(gcvb_id,config_id)
-            batch_tests=all_tests
+            batch_job=all_tests
 
             if(args.by_batch):
-                job_file=os.path.join(computation_dir,"{}.sh".format(all_batches[i]))
-                batch_tests=[t for t in all_tests if re.match(all_batches[i], t["id"])]
+                job_file=os.path.join(computation_dir,"{}.sh".format(all_batch_jobs[i]))
+                batch_job=[t for t in all_tests if re.match(all_batch_jobs[i], t["id"])]
+            elif(args.by_test):
+                job_file=os.path.join(computation_dir,"{}.sh".format(all_batch_jobs[i]["id"]))
+                batch_job=all_batch_jobs[i]
             else:
                 job_file=os.path.join(computation_dir,"job.sh")            
 
-            db.add_tests(run_id, batch_tests, args.chain)
+            db.add_tests(run_id, batch_job, args.chain)
 
             data_root=a["data_root"]
             job.write_script(
-                batch_tests, config, data_root, gcvb_id, run_id,
+                batch_job, config, data_root, gcvb_id, run_id,
                 job_file=job_file, header=args.header,
                 local_header=config["local_header"] if args.local_header == True else None,
                 validate_only=args.validate_only,

@@ -15,6 +15,8 @@ def templates_to_files(test,template_path,target_dir):
         format_dic["@job"]={}
         if "batch" in test:
             format_dic["@job"]["batch"]=test["batch"]
+        if "singleton" in test:
+            format_dic["@job"]["batch"]=test["singleton"]
         format_dic["@job"]["id"]=test["id"]
         format_dic["@job_creation"]=template.job_creation_dict()
         template.apply_format_to_file(src,dst,format_dic)
