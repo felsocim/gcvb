@@ -1,11 +1,12 @@
 import dash
 import dash_html_components as html
 import dash_bootstrap_components as dbc
-import gcvb.validation as val
 import gcvb.db as db
 import gcvb.yaml_input as yaml_input
 import os
-from .loader import loader
+from gcvb.loader import loader as loader
+import gcvb.model as model
+import dash_defer_js_import as dji
 
 if __name__ == '__main__':
     from app import app
@@ -14,14 +15,14 @@ else:
 from dash.dependencies import Input, Output
 
 # Data
-def data_preparation(report, ya):
-    res={"id" : [], "description" : [], "result" : []}
-    for test_id,test in sorted(report.validation_base.items()):
-        if test_id not in report.status:
-            continue
+def data_preparation(run_id):
+    run = model.Run(run_id)
+    res={"id" : [], "description" : [], "result" : [], "cpu time (s)": []}
+    for test_id,test in run.Tests.items():
         res["id"].append(test_id)
-        res["description"].append(ya["Tests"][test_id].get("description")) # to be changed
-        res["result"].append(report.status[test_id])
+        res["description"].append(test.raw_dict.get("description", ""))
+        res["result"].append(test.hr_result())
+        res["cpu time (s)"].append(test.cpu_time())
     return res
 
 # View
@@ -40,21 +41,24 @@ def Table(report, run_id, columns=None):
             row.append(cell)
         rows.append(html.Tr(row))
     rows = [html.Tbody(rows)]
-    return html.Table([html.Tr([html.Th(col) for col in columns])] + rows,
-                      className="table table-hover table-bordered table-sm")
+    head = html.Thead([html.Tr([html.Th(col) for col in columns])])
+    return html.Table([head] + rows, className="table table-hover table-bordered table-sm")
 
 #Page Generator
 def gen_page(run_id, gcvb_id):
     computation_dir="./results/{}".format(str(gcvb_id))
-    a = loader.load_base(run_id)
-    r=db.load_report(run_id)
-    report = val.Report(a,r)
-    data = data_preparation(report, a)
-    layout = dbc.Container([html.H1("Run"),Table(data,run_id,["id","description","result"])])
+    run_id,gcvb_id=db.get_last_run()
+    data = data_preparation(run_id)
+    layout = dbc.Container(
+        [
+            dji.Import(src="/assets/sortable.js"),
+            html.H1("Run"),
+            Table(data, run_id, data.keys()),
+        ]
+    )
     return layout
 
 layout = html.Div(id="run-content")
-
 @app.callback(Output('run-content', 'children'),
               [Input('url', 'pathname')])
 def display_page(pathname):

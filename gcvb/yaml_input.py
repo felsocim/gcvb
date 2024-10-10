@@ -20,14 +20,7 @@ def set_default_value(default_dict,target_dict):
         if k not in target_dict:
             target_dict[k]=v
 
-def load_yaml(yaml_file, modifier=None):
-    """Load a yaml file and generate the corresponding gcvb dictionary
-
-    Keyword arguments:
-    yaml_file -- name of the file to load
-    """
-    original=util.open_yaml(yaml_file)
-
+def convert_yaml_to_gcvb_dict(original):
     res={}
     default_values=original.get("default_values",{})
     #res["default_values"]=default_values
@@ -76,6 +69,23 @@ def load_yaml(yaml_file, modifier=None):
             else:
                 current_test=copy.deepcopy(test)
                 current_pack["Tests"].append(current_test)
+    return res
+
+def load_yaml(yaml_file, modifier=None):
+    """Load a yaml file and generate the corresponding gcvb dictionary
+
+    Keyword arguments:
+    yaml_file -- name of the file to load
+    """
+    dbmtime, res = db.load_yaml_cache(yaml_file)
+    fe = os.path.exists(yaml_file)
+    mtime = os.path.getmtime(yaml_file) if fe else 0
+    if dbmtime < mtime:
+        original = util.open_yaml(yaml_file)
+        res = convert_yaml_to_gcvb_dict(original)
+        db.save_yaml_cache(mtime, yaml_file, res)
+    if not fe:
+        print("Warning: {} not found, using cache.".format(yaml_file))
 
     if (modifier):
         mod=importlib.import_module(modifier)
@@ -103,12 +113,15 @@ def get_references(tests_cases,data_root="./"):
     Keyword argument:
     tests_cases -- iterable of tests_cases
     """
-    data_dirs={t["data"] for t in tests_cases}
+    data_dirs = {t["data"] for t in tests_cases if "data" in t}
     res={}
     for d in data_dirs:
         res[d]={}
         ref_path=os.path.join(data_root,d,"references")
-        subfolders = [f.name for f in os.scandir(ref_path) if f.is_dir()]
+        if os.path.exists(ref_path):
+            subfolders = [f.name for f in os.scandir(ref_path) if f.is_dir()]
+        else:
+            subfolders = []
         for current_ref in subfolders:
             tmp=util.open_yaml(os.path.join(ref_path,current_ref,"ref.yaml"))
             for v in tmp:

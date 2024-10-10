@@ -35,11 +35,12 @@ def generate(target_dir,gcvb):
     for p in gcvb["Packs"]:
         for t in p["Tests"]:
             os.makedirs(os.path.join(target_dir,t["id"]))
-            data_path=os.path.join(data_root,t["data"],"input")
-            for file in os.listdir(data_path):
-                src=os.path.join(data_path,file)
-                dst=os.path.join(target_dir,t["id"],file)
-                os.symlink(src,dst)
+            if "data" in t:
+                data_path=os.path.join(data_root,t["data"],"input")
+                for file in os.listdir(data_path):
+                    src=os.path.join(data_path,file)
+                    dst=os.path.join(target_dir,t["id"],file)
+                    os.symlink(src,dst)
             if ("template_files" in t):
                 if isinstance(t["template_files"], list):
                     for template_dir in t["template_files"]:
@@ -85,7 +86,10 @@ def fill_at_job_creation_validation(at_job_creation, validation, data_root, ref_
             v_dir,v_id=tmp[0],tmp[1]
         else:
             v_dir,v_id=validation["base"],validation["ref"]
-        at_job_creation["va_filename"]=valid[ref_data][v_dir][v_id]["file"]
+        if v_dir in valid[ref_data]:
+           at_job_creation["va_filename"]=valid[ref_data][v_dir][v_id]["file"]
+        else:
+           at_job_creation["va_filename"]="notavailable"
         at_job_creation["va_refdir"]=os.path.join(data_root,ref_data,"references",v_dir)
     if validation["executable"] in config["executables"]:
         at_job_creation["va_executable"]=config["executables"][validation["executable"]]
@@ -124,6 +128,7 @@ def write_script(tests, config, data_root, base_id, run_id, *, job_file="job.sh"
             step = 0
             for c,t in enumerate(test["Tasks"]):
                 step += 1
+                f.write("export GCVB_STEP_ID={!s}\n".format(step))
                 f.write(singularity_prefix + "python3 -m gcvb db start_task {0} {1} 0\n".format(test["id_db"],step))
                 at_job_creation={}
                 fill_at_job_creation_task(at_job_creation, t, test["id"]+"_"+str(c), config, singularity)
@@ -133,6 +138,7 @@ def write_script(tests, config, data_root, base_id, run_id, *, job_file="job.sh"
                 f.write(singularity_prefix + "python3 -m gcvb db end_task {0} {1} $?\n".format(test["id_db"],step))
                 for d,v in enumerate(t.get("Validations",[])):
                     step += 1
+                    f.write("export GCVB_STEP_ID={!s}\n".format(step))
                     f.write(singularity_prefix + "python3 -m gcvb db start_task {0} {1} 0\n".format(test["id_db"],step))
                     fill_at_job_creation_validation(at_job_creation, v, data_root, test["data"], config, valid, singularity)
                     if singularity:

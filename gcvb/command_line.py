@@ -6,15 +6,17 @@ import os
 import sys
 import pprint
 import time
+import platform
 from . import yaml_input
 from . import template
 from . import job
 from . import util
 from . import db
-from . import validation
 from . import snippet
 from . import generate_refs
 from . import jobrunner
+from . import model
+from . import report
 
 def parse():
     parser = argparse.ArgumentParser(description="(G)enerate (C)ompute (V)alidate (B)enchmark",prog="gcvb")
@@ -29,7 +31,8 @@ def parse():
     group.add_argument('--filter-by-tag-or',metavar="tag_list",help="comma-separated list of tags to filter tests (OR operator)")
     #filter + exclude is possible.
     parser.add_argument('--exclude-tag',metavar="tag_list",help="comma-separated list of tags to filter tests. Tests containing at least one of the tags will be excluded.")
-    
+    parser.add_argument('--db-file', help="Alternative path of the gcvb.db file (experimental).", default="gcvb.db")
+
     subparsers = parser.add_subparsers(dest="command")
     parser_generate = subparsers.add_parser('generate', help="generate a new gcvb instance")
     parser_list = subparsers.add_parser('list', help="list tests (YAML)")
@@ -37,6 +40,8 @@ def parse():
     parser_db = subparsers.add_parser('db', add_help=False)
     parser_report = subparsers.add_parser('report', help="get a report regarding a gcvb run")
     parser_dashboard = subparsers.add_parser('dashboard', help="launch a Dash instance to browse results" )
+    parser_dashboard.add_argument("--debug", "-d", action="store_true", help="Run Flask in debug mode")
+    parser_dashboard.add_argument("--bind-to","-b", metavar="port_or_bind_address", help="change default binding", default="127.0.0.1:8050")
     parser_snippet = snippet.generate_parser(subparsers)
     parser_generate_refs = subparsers.add_parser('generate_refs', help="generate references from a base where a computation has already been executed.")
     parser_jobrunner = subparsers.add_parser("jobrunner", help="jobrunner to launch tests in parallel")
@@ -63,10 +68,17 @@ def parse():
     parser_compute.add_argument("--with-singularity", action="store_true", help="execute all commands in job script within a Singularity container")
     group = parser_compute.add_mutually_exclusive_group()
     group.add_argument("--dry-run", action="store_true", help="do not launch the job.")
-    group.add_argument("--with-jobrunner", metavar="num_cores", type=int, help="use a jobrunner instead of one submitted job with <num_cores>", default=None)
+    group.add_argument(
+        "--with-jobrunner",
+        "-j",
+        metavar="num_cores",
+        type=int,
+        help="use a jobrunner instead of one submitted job with <num_cores>",
+        default=None,
+    )
     group.add_argument("--validate-only",action="store_true",help="re-run the validation tasks of already finished tests", default=False)
     parser_compute.add_argument("--started-first", action="store_true", help="already started tests are launched with a higher priority (--with-jobrunner required)")
-    parser_compute.add_argument("--verbose", action="store_true", help="display informations (--with-jobrunner required)")
+    parser_compute.add_argument("--quiet", action="store_true", help="Hide jobrunner execution log")
     parser_compute.add_argument("--max-concurrent", metavar="jobs", type=int, help="maxium jobs that can be executed concurrently by a jobrunner (--with-jobrunner required)", default=0)
 
     parser_db.add_argument("db_command", choices=["start_test","end_test","start_run","end_run","start_task","end_task"])
@@ -81,12 +93,13 @@ def parse():
 
     parser_jobrunner.add_argument("num_cores", metavar="num_cores", type=int, help="number of cores to be used")
     parser_jobrunner.add_argument("--started-first", action="store_true", help="already started tests are launched with a higher priority")
-    parser_jobrunner.add_argument("--verbose", action="store_true", help="display informations")
+    parser_jobrunner.add_argument("--quiet", action="store_true", help="Hide execution log")
     parser_jobrunner.add_argument("--max-concurrent", metavar="jobs", type=int, help="maxium jobs that can be executed concurrently by a jobrunner", default=0)
 
     parser_report.add_argument("--polling", action="store_true", help="poll report until finished or timeout expiration")
     parser_report.add_argument("-f","--frequency", help="time between each check", type=float, default=10)
-    parser_report.add_argument("--timeout", help="time between each", type=float, default=300)
+    parser_report.add_argument("--timeout", help="maximum time (in seconds) to wait for a single job to finish in polling mode", type=float, default=3600)
+    parser_report.add_argument("--html", action="store_true", help="display result in html format")
 
 
     args=parser.parse_args()
@@ -119,13 +132,21 @@ def filter_tests(args,data):
     return data
 
 def get_to_gcvb_root():
-    while not(os.path.isfile("config.yaml")):
-        current_path=os.getcwd()
-        os.chdir("..")
-        if (os.getcwd()==current_path):
-            print("You are not inside a gcvb instance. The config.yaml was not found in a parent directory.")
-            sys.exit()
-    sys.path.append(os.getcwd())
+    cwd = os.getcwd()
+    d = cwd
+    while not os.path.isfile(os.path.join(d, "config.yaml")):
+        nd = os.path.dirname(d)
+        if nd == d:
+            print("Warning: config.yaml was not found in a parent directory."
+                " Using current folder as gcvb instance root.", file=sys.stderr)
+            d = cwd
+            break
+        else:
+            d = nd
+    # FIXME: remove this chdir and return the root folder. chdir is bad
+    # if we want gcvb to be used as a library. It's too global.
+    os.chdir(d)
+    sys.path.append(d)
 
 def report_check_terminaison(run_id):
     tests=db.get_tests(run_id)
@@ -143,15 +164,18 @@ def list_human_readable(packs):
 
 def main():
     args=parse()
+    db.set_db(args.db_file)
     if args.command not in ["db","snippet"]:
         #currently db is a special command that is supposed to be invoked only internaly by gcvb.
         get_to_gcvb_root()
 
-    if args.command in ["list","generate"]:
-        a=yaml_input.load_yaml(args.yaml_file, args.modifier)
-        a=filter_tests(args,a)
+    if not(os.path.isfile(db.database)):
+        db.create_db()
+
     #Commands
     if args.command=="list":
+        a=yaml_input.load_yaml(args.yaml_file, args.modifier)
+        a=filter_tests(args,a)
         if not(args.count):
             if (args.human_readable):
               r = list_human_readable(a["Packs"])
@@ -165,8 +189,9 @@ def main():
         if (args.data_root):
             data_root=os.path.abspath(args.data_root)
 
-        if not(os.path.isfile(db.database)):
-            db.create_db()
+        a=yaml_input.load_yaml(args.yaml_file, args.modifier)
+        a=filter_tests(args,a)
+
         gcvb_id=db.new_gcvb_instance(' '.join(sys.argv[1:]),args.yaml_file,args.modifier)
         target_dir="./results/{}".format(str(gcvb_id))
         a["data_root"]=data_root
@@ -174,7 +199,6 @@ def main():
 
     if args.command=="compute":
         gcvb_id=args.gcvb_base
-
         if os.path.exists("config.yaml"):
             config = util.open_yaml("config.yaml")
         else:
@@ -186,7 +210,6 @@ def main():
                 "local_header": "sbatch",
                 "singularity": []
             }
-
         config_id=config.get("machine_id")
 
         if not(gcvb_id):
@@ -245,7 +268,7 @@ def main():
         run_id,gcvb_id=db.get_last_run() #run chosen should be modifiable
         config=util.open_yaml("config.yaml")
         num_cores=args.num_cores
-        j=jobrunner.JobRunner(num_cores, run_id, config, args.started_first, args.max_concurrent, args.verbose)
+        j=jobrunner.JobRunner(num_cores, run_id, config, args.started_first, args.max_concurrent, not args.quiet)
         j.run()
 
     if args.command=="db":
@@ -272,47 +295,42 @@ def main():
 
     if args.command=="report":
         run_id,gcvb_id=db.get_last_run()
+        if args.polling:
+            while run_id is None:
+                time.sleep(args.frequency)
+                run_id, gcvb_id = db.get_last_run()
+            # FIXME no need to read all tests, we just want the number of tests
+            n = len(db.get_tests(run_id))
+            while n == 0:
+                time.sleep(args.frequency)
+                n = len(db.get_tests(run_id))
+
         computation_dir="./results/{}".format(str(gcvb_id))
-        a=yaml_input.load_yaml_from_run(run_id)
 
         #Is the run finished ?
-        started_at=time.time()
+        last_change = time.time()
         previous_completed_tests = -1
         completed_tests, tests, finished = report_check_terminaison(run_id)
 
         if args.polling:
-            while not finished and time.time()-started_at<args.timeout :
+            while not finished and time.time() - last_change < args.timeout :
                 completed_tests, tests, finished = report_check_terminaison(run_id)
                 if (previous_completed_tests != len(completed_tests)):
+                    last_change = time.time()
                     now = time.strftime("%H:%M:%S %d/%m/%y")
                     print("Tests completed : {!s}/{!s} ({!s})".format(len(completed_tests),len(tests),now))
+                    # Polling is for progress monitoring so we need flush
+                    sys.stdout.flush()
                 time.sleep(args.frequency)
                 previous_completed_tests = len(completed_tests)
 
-
-        started_but_not_finished=list(filter(lambda x: not x["end_date"] and x["start_date"], tests))
-        started_but_not_finished=[t["name"] for t in started_but_not_finished]
-        if (started_but_not_finished):
-            print(f"{len(started_but_not_finished)} tests did start but did not finish : ")
-            print(started_but_not_finished)
-        print("Tests completed : {!s}/{!s}".format(len(completed_tests),len(tests)))
-
-        tmp=db.load_report(run_id)
-        report=validation.Report(a,tmp)
-        if report.is_success():
-            if finished:
-                print("Success!")
-            else:
-                print("No failure yet, computation in progress...")
+        run = model.Run(run_id)
+        if (args.html):
+            print(report.html_report(run))
         else:
-            if report.missing_validations:
-                #should we show only missing_validations for completed tests ?
-                print("Some validation metrics are missing :")
-                pprint.pprint(report.missing_validations)
-            failed=report.get_failed_tests()
-            print("{!s} failure(s) : {!s}".format(len(failed),list(failed)))
-            print("Details of failures :")
-            pprint.pprint(report.failure)
+            print(report.str_report(run))
+        if not run.success:
+            sys.exit(1)
 
     if args.command == "snippet":
         snippet.display(args)
@@ -326,7 +344,7 @@ def main():
 
     if args.command=="dashboard":
         from . import dashboard
-        dashboard.run_server()
+        dashboard.run_server(debug=args.debug, bind_to=args.bind_to)
 
 if __name__ == '__main__':
     main()

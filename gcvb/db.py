@@ -2,7 +2,9 @@ import sqlite3
 import os
 import glob
 import gzip
+from collections import defaultdict
 from . import util
+import datetime
 
 #SCRIPTS
 creation_script="""
@@ -10,27 +12,27 @@ CREATE TABLE gcvb(id            INTEGER PRIMARY KEY,
                   command_line  TEXT,
                   yaml_file     TEXT,
                   modifier      TEXT,
-                  creation_date INTEGER);
+                  creation_date TIMESTAMP);
 
 CREATE TABLE run(id         INTEGER PRIMARY KEY,
-                 start_date INTEGER,
-                 end_date   INTEGER,
+                 start_date TIMESTAMP,
+                 end_date   TIMESTAMP,
                  gcvb_id    INTEGER,
                  config_id  TEXT,
                  FOREIGN KEY(gcvb_id) REFERENCES gcvb(id));
 
 CREATE TABLE test(id         INTEGER PRIMARY KEY,
                   name       TEXT,
-                  start_date INTEGER,
-                  end_date   INTEGER,
+                  start_date TIMESTAMP,
+                  end_date   TIMESTAMP,
                   run_id     INTEGER,
                   FOREIGN KEY(run_id) REFERENCES run(id));
 
 CREATE TABLE task(id         INTEGER PRIMARY KEY,
                   step       INTEGER,
                   parent     INTEGER,
-                  start_date INTEGER,
-                  end_date   INTEGER,
+                  start_date TIMESTAMP,
+                  end_date   TIMESTAMP,
                   test_id    INTEGER,
                   status     INTEGER DEFAULT -3, -- >=0, exit_status | -1 running | -2 ready | -3 pending
                   FOREIGN KEY(test_id) REFERENCES test(id));
@@ -47,18 +49,30 @@ CREATE TABLE files(id       INTEGER PRIMARY KEY,
                    filename TEXT,
                    file     BLOB,
                    test_id  INTEGER,
-                   FOREIGN KEY(test_id) REFERENCES test(id))
+                   FOREIGN KEY(test_id) REFERENCES test(id));
+
+CREATE TABLE yaml_cache(mtime REAL, filename TEXT, pickle BLOB);
 """
+
+def now():
+    return datetime.datetime.now()
 
 #GLOBAL
 database="gcvb.db"
+synchronous=None
 
 def set_db(db_path):
-    global database
+    global database, synchronous
     database=db_path
 
 def connect(file,f, *args, **kwargs):
-    conn=sqlite3.connect(file, timeout=5)
+    global synchronous
+    conn=sqlite3.connect(file, timeout=50, detect_types=sqlite3.PARSE_DECLTYPES, isolation_level='EXCLUSIVE')
+    if synchronous is None:
+        # See https://www.sqlite.org/pragma.html#pragma_synchronous
+        # OFF is known to be needed with Lustre
+        synchronous = os.environ.get("GCVB_SYNC", "FULL")
+    conn.execute(f"PRAGMA synchronous={synchronous}")
     conn.row_factory=sqlite3.Row
     c=conn.cursor()
     try:
@@ -75,7 +89,8 @@ def connect(file,f, *args, **kwargs):
 def get_exclusive_access():
     """Returns a sqlite3.Connection with exclusive access to the db.
        Must be closed afterwards"""
-    conn=sqlite3.connect(database, timeout=20)
+    conn=sqlite3.connect(database, timeout=50)
+    conn.execute(f"PRAGMA synchronous={synchronous}")
     conn.row_factory=sqlite3.Row
     conn.isolation_level = 'EXCLUSIVE'
     conn.execute('BEGIN EXCLUSIVE')
@@ -93,7 +108,7 @@ def create_db(cursor):
 
 @with_connection
 def new_gcvb_instance(cursor, command_line, yaml_file, modifier):
-    cursor.execute("INSERT INTO gcvb(command_line,yaml_file,modifier,creation_date) VALUES (?,?,?,CURRENT_TIMESTAMP)",[command_line,yaml_file,modifier])
+    cursor.execute("INSERT INTO gcvb(command_line,yaml_file,modifier,creation_date) VALUES (?,?,?,?)",[command_line,yaml_file,modifier,now()])
     return cursor.lastrowid
 
 @with_connection
@@ -136,35 +151,35 @@ def add_tests(cursor, run, test_list, chain):
 @with_connection
 def start_test(cursor,run,test_id):
     cursor.execute("""UPDATE test
-                      SET start_date = CURRENT_TIMESTAMP
-                      WHERE id = ? AND run_id = ?""",[test_id,run])
+                      SET start_date = ?
+                      WHERE id = ? AND run_id = ?""",[now(), test_id, run])
 
 @with_connection
 def end_test(cursor, run, test_id):
     cursor.execute("""UPDATE test
-                      SET end_date = CURRENT_TIMESTAMP
-                      WHERE id = ? AND run_id = ?""",[test_id,run])
+                      SET end_date = ?
+                      WHERE id = ? AND run_id = ?""",[now(), test_id, run])
 
 @with_connection
 def start_task(cursor, test_id, step):
     cursor.execute("""UPDATE task
-                      SET start_date = CURRENT_TIMESTAMP, status = -1
-                      WHERE step = ? AND test_id = ?""", [step, test_id])
+                      SET start_date = ?, status = -1
+                      WHERE step = ? AND test_id = ?""", [now(), step, test_id])
 
 @with_connection
 def end_task(cursor, test_id, step, exit_status):
     cursor.execute("""UPDATE task
-                      SET end_date = CURRENT_TIMESTAMP, status = ?
-                      WHERE step = ? AND test_id = ?""", [exit_status, step, test_id])
+                      SET end_date = ?, status = ?
+                      WHERE step = ? AND test_id = ?""", [now(), exit_status, step, test_id])
 
 @with_connection
 def start_run(cursor,run):
     #update only if there is no start date already.
     #Multiple launch scripts can be started, and we might not be the first.
     cursor.execute("""UPDATE run
-                      SET start_date = CURRENT_TIMESTAMP
+                      SET start_date = ?
                       WHERE id = ?
-                        AND start_date IS NULL""",[run])
+                        AND start_date IS NULL""",[now(), run])
 
 @with_connection
 def end_run(cursor,run):
@@ -176,18 +191,26 @@ def end_run(cursor,run):
     count=cursor.fetchone()["count(*)"]
     if not(count):
         cursor.execute("""UPDATE run
-                          SET end_date = CURRENT_TIMESTAMP
-                          WHERE id = ?""",[run])
+                          SET end_date = ?
+                          WHERE id = ?""",[now(), run])
 
 @with_connection
-def add_metric(cursor, run_id, test_id, name, value):
-    cursor.execute("INSERT INTO valid(metric,value,test_id) VALUES (?,?,?)",[name,value,test_id])
+def add_metric(cursor, run_id, test_id, step, name, value):
+    cursor.execute("INSERT INTO valid(metric,value,test_id,task_step) VALUES (?,?,?,?)",[name,value,test_id, step])
 
 @with_connection
 def get_last_run(cursor):
     cursor.execute("SELECT * from run ORDER BY id DESC LIMIT 1")
     res=cursor.fetchone()
-    return (res["id"],res["gcvb_id"])
+    if res is None:
+        return None, None
+    else:
+        return res["id"], res["gcvb_id"]
+
+@with_connection
+def get_run_infos(cursor, run_id):
+    cursor.execute("SELECT * from run WHERE id = ?", [run_id])
+    return cursor.fetchone()
 
 @with_connection
 def has_run(cursor, gcvb_id):
@@ -215,6 +238,29 @@ def load_report(cursor, run_id):
     return res
 
 @with_connection
+def load_report_n(cursor, run_id):
+    a="""SELECT metric, value, name, task_step
+         FROM valid
+         INNER JOIN test
+         ON test_id=test.id
+         WHERE test.run_id=(?)"""
+    cursor.execute(a,[run_id])
+    res = defaultdict(lambda : defaultdict(dict))
+    for t in cursor.fetchall():
+        res[t["name"]][t["task_step"]][t["metric"]]=t["value"]
+    return res
+
+
+@with_connection
+def save_blobs(cursor, data):
+    request="""INSERT INTO files(filename,file, test_id)
+               VALUES (?,?,?)"""
+
+    for params in data:
+        cursor.execute(request, params)
+
+
+@with_connection
 def save_files(cursor, run_id, test_id, file_list):
     request="""INSERT INTO files(filename,file, test_id)
                VALUES (?,?,?)"""
@@ -223,6 +269,25 @@ def save_files(cursor, run_id, test_id, file_list):
         for file in glob.iglob(pattern):
             content=util.file_to_compressed_binary(file)
             cursor.execute(request,[file,content,test_id])
+
+@with_connection
+def save_yaml_cache(cursor, mtime, filename, res_dict):
+    req1 = "DELETE FROM yaml_cache WHERE filename = ?"
+    req2 = "INSERT INTO yaml_cache(mtime, filename, pickle) VALUES (?,?,?)"
+    loaded_dict = util.pickle_obj_to_binary(res_dict)
+    cursor.execute(req1, (filename,))
+    cursor.execute(req2, (mtime, filename, loaded_dict))
+    return res_dict
+
+@with_connection
+def load_yaml_cache(cursor, filename):
+    request = "SELECT mtime, pickle FROM yaml_cache WHERE filename = ?"
+    cursor.execute(request, (filename, ))
+    res = cursor.fetchone()
+    if res is None:
+        return 0, None
+    else:
+        return res["mtime"], util.pickle_binary_to_obj(res["pickle"])
 
 @with_connection
 def get_tests(cursor, run_id):
@@ -237,7 +302,8 @@ def get_file_list(cursor, run_id, test_name):
     request="""SELECT filename
                FROM files
                INNER JOIN test ON test_id=test.id
-               WHERE run_id = ? AND test.name = ?"""
+               INNER JOIN run ON test.run_id=run.id
+               WHERE run.gcvb_id = ? AND test.name = ?"""
     cursor.execute(request,[run_id,test_name])
     res=cursor.fetchall()
     return [f["filename"] for f in res]
@@ -247,7 +313,8 @@ def retrieve_file(cursor, run_id, test_name, filename):
     request="""SELECT file
                FROM files
                INNER JOIN test ON test_id=test.id
-               WHERE run_id = ? AND test.name = ? AND filename = ?"""
+               INNER JOIN run ON test.run_id=run.id
+               WHERE run.gcvb_id = ? AND test.name = ? AND filename = ?"""
     cursor.execute(request, [run_id,test_name, filename])
     return gzip.decompress(cursor.fetchone()["file"])
 
@@ -284,4 +351,16 @@ def retrieve_history(cursor, test_id, metric_id):
                WHERE test.name=? AND valid.metric=?"""
     cursor.execute(request,[test_id,metric_id])
     res=cursor.fetchall()
+    return res
+
+@with_connection
+def get_steps(cursor, run_id):
+    request="""SELECT test.name, step, task.start_date, task.end_date, status
+               FROM task
+               INNER JOIN test ON test.id=task.test_id
+               WHERE test.run_id = ?"""
+    cursor.execute(request, [run_id])
+    res = defaultdict(lambda : defaultdict(dict))
+    for t in cursor.fetchall():
+        res[t["name"]][t["step"]]=dict(t)
     return res
