@@ -32,6 +32,7 @@ def parse():
     #filter + exclude is possible.
     parser.add_argument('--exclude-tag',metavar="tag_list",help="comma-separated list of tags to filter tests. Tests containing at least one of the tags will be excluded.")
     parser.add_argument('--db-file', help="Alternative path of the gcvb.db file (experimental).", default="gcvb.db")
+    parser.add_argument('--config', metavar="filename", default="config.yaml", help="Alternative name of the configuration file.")
 
     subparsers = parser.add_subparsers(dest="command")
     parser_generate = subparsers.add_parser('generate', help="generate a new gcvb instance")
@@ -131,13 +132,13 @@ def filter_tests(args,data):
             e["Tests"]=[t for t in e["Tests"] if (tags.intersection(set(t.get("tags",[])))==set())]
     return data
 
-def get_to_gcvb_root():
+def get_to_gcvb_root(config):
     cwd = os.getcwd()
     d = cwd
-    while not os.path.isfile(os.path.join(d, "config.yaml")):
+    while not os.path.isfile(os.path.join(d, config)):
         nd = os.path.dirname(d)
         if nd == d:
-            print("Warning: config.yaml was not found in a parent directory."
+            print("Warning: " + config + " was not found in a parent directory."
                 " Using current folder as gcvb instance root.", file=sys.stderr)
             d = cwd
             break
@@ -167,7 +168,7 @@ def main():
     db.set_db(args.db_file)
     if args.command not in ["db","snippet"]:
         #currently db is a special command that is supposed to be invoked only internaly by gcvb.
-        get_to_gcvb_root()
+        get_to_gcvb_root(args.config)
 
     if not(os.path.isfile(db.database)):
         db.create_db()
@@ -199,8 +200,8 @@ def main():
 
     if args.command=="compute":
         gcvb_id=args.gcvb_base
-        if os.path.exists("config.yaml"):
-            config = util.open_yaml("config.yaml")
+        if os.path.exists(args.config):
+            config = util.open_yaml(args.config)
         else:
             config = {
                 "machine_id": platform.node(),
@@ -266,7 +267,7 @@ def main():
 
     if args.command=="jobrunner":
         run_id,gcvb_id=db.get_last_run() #run chosen should be modifiable
-        config=util.open_yaml("config.yaml")
+        config=util.open_yaml(args.config)
         num_cores=args.num_cores
         j=jobrunner.JobRunner(num_cores, run_id, config, args.started_first, args.max_concurrent, not args.quiet)
         j.run()
