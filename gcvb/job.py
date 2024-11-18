@@ -140,7 +140,7 @@ def write_script(tests, config, data_root, base_id, run_id, *, job_file="job.sh"
                     step += 1
                     f.write("export GCVB_STEP_ID={!s}\n".format(step))
                     f.write(singularity_prefix + "python3 -m gcvb db start_task {0} {1} 0\n".format(test["id_db"],step))
-                    fill_at_job_creation_validation(at_job_creation, v, data_root, test["data"], config, valid, singularity)
+                    fill_at_job_creation_validation(at_job_creation, v, data_root, test["data"] if "data" in test else "", config, valid, singularity)
                     if singularity:
                         va_command_pieces=v["launch_command"].split()
                         va_command_pieces.insert(va_command_pieces.index("{@job_creation[singularity]}") + 1, "bash -c 'export GCVB_RUN_ID={0} GCVB_TEST_ID={1} &&".format(run_id,test["id_db"]))
