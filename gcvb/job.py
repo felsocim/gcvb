@@ -61,8 +61,8 @@ def format_launch_command(format_string, config, at_job_creation):
     return format_string.format(**d)
 
 def fill_at_job_creation_task(at_job_creation, task, full_id, config, singularity):
-    at_job_creation["nthreads"]=task["nthreads"]
-    at_job_creation["nprocs"]=task["nprocs"]
+    at_job_creation["nthreads"]=task.get("nthreads", "1")
+    at_job_creation["nprocs"]=task.get("nprocs", "1")
     at_job_creation["full_id"]=full_id #test["id"]+"_"+str(c)
     at_job_creation["executable"]=task["executable"]
     if task["executable"] in config["executables"]:
