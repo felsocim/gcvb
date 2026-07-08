@@ -102,9 +102,6 @@ def fill_at_job_creation_validation(at_job_creation, validation, data_root, ref_
 
 def write_script(tests, config, data_root, base_id, run_id, *, job_file="job.sh", header=None, local_header=None, validate_only=False, singularity=False):
     valid=yaml_input.get_references(tests,data_root)
-    singularity_prefix = ""
-    if singularity:
-        singularity_prefix = " ".join(config["singularity"]) + " "
     with open(job_file,'w') as f:
         if (header):
             with open(header, 'r') as h:
@@ -116,44 +113,38 @@ def write_script(tests, config, data_root, base_id, run_id, *, job_file="job.sh"
                 for line in h:
                     f.write(line)
             f.write("\n")
-        f.write(singularity_prefix + "python3 -m gcvb db start_run {0} -1 -1 \n".format(run_id))
+        f.write("python3 -m gcvb db start_run {0} -1 -1 \n".format(run_id))
         f.write("cd results/{0}\n".format(str(base_id)))
         for test in tests:
             f.write("\n#TEST {}\n".format(test["id"]))
-            if not singularity:
-                f.write("export GCVB_RUN_ID={!s}\n".format(run_id))
-                f.write("export GCVB_TEST_ID={!s}\n".format(test["id_db"]))
+            f.write("export GCVB_RUN_ID={!s}\n".format(run_id))
+            f.write("export GCVB_TEST_ID={!s}\n".format(test["id_db"]))
             f.write("cd {0}\n".format(test["id"]))
-            f.write(singularity_prefix + "python3 -m gcvb db start_test {0} {1} {2}\n".format(run_id,test["id_db"],test["id"]))
+            f.write("python3 -m gcvb db start_test {0} {1} {2}\n".format(run_id,test["id_db"],test["id"]))
             step = 0
             for c,t in enumerate(test["Tasks"]):
                 step += 1
                 f.write("export GCVB_STEP_ID={!s}\n".format(step))
-                f.write(singularity_prefix + "python3 -m gcvb db start_task {0} {1} 0\n".format(test["id_db"],step))
+                f.write("python3 -m gcvb db start_task {0} {1} 0\n".format(test["id_db"],step))
                 at_job_creation={}
                 fill_at_job_creation_task(at_job_creation, t, test["id"]+"_"+str(c), config, singularity)
                 if not(validate_only):
                     f.write(format_launch_command(t["launch_command"],config,at_job_creation))
                     f.write("\n")
-                f.write(singularity_prefix + "python3 -m gcvb db end_task {0} {1} $?\n".format(test["id_db"],step))
+                f.write("python3 -m gcvb db end_task {0} {1} $?\n".format(test["id_db"],step))
                 for d,v in enumerate(t.get("Validations",[])):
                     step += 1
                     f.write("export GCVB_STEP_ID={!s}\n".format(step))
-                    f.write(singularity_prefix + "python3 -m gcvb db start_task {0} {1} 0\n".format(test["id_db"],step))
+                    f.write("python3 -m gcvb db start_task {0} {1} 0\n".format(test["id_db"],step))
                     fill_at_job_creation_validation(at_job_creation, v, data_root, test["data"] if "data" in test else "", config, valid, singularity)
-                    if singularity:
-                        va_command_pieces=v["launch_command"].split()
-                        va_command_pieces.insert(va_command_pieces.index("{@job_creation[singularity]}") + 1, "bash -c 'export GCVB_RUN_ID={0} GCVB_TEST_ID={1} &&".format(run_id,test["id_db"]))
-                        v["launch_command"]=" ".join(va_command_pieces)
-                        v["launch_command"]+="'"
                     va_command = format_launch_command(v["launch_command"],config,at_job_creation)
                     f.write(va_command)
                     f.write("\n")
-                    f.write(singularity_prefix + "python3 -m gcvb db end_task {0} {1} $?\n".format(test["id_db"],step))
-            f.write(singularity_prefix + "python3 -m gcvb db end_test {0} {1} {2}\n".format(run_id,test["id_db"],test["id"]))
+                    f.write("python3 -m gcvb db end_task {0} {1} $?\n".format(test["id_db"],step))
+            f.write("python3 -m gcvb db end_test {0} {1} {2}\n".format(run_id,test["id_db"],test["id"]))
             f.write("cd ..\n")
         f.write("cd ../..\n")
-        f.write(singularity_prefix + "python3 -m gcvb db end_run {0} -1 -1 \n".format(run_id))
+        f.write("python3 -m gcvb db end_run {0} -1 -1 \n".format(run_id))
 
 def launch(job_file, config, validate_only=False, wait_after_submitting=False):
     submit_command = config["submit_command"]
