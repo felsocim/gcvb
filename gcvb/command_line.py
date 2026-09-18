@@ -244,7 +244,7 @@ def main():
                 batch_job=[t for t in all_tests if re.match(all_batch_jobs[i], t["id"])]
             elif(args.by_test):
                 job_file=os.path.join(computation_dir,"{}.sh".format(all_batch_jobs[i]["id"]))
-                batch_job=all_batch_jobs[i]
+                batch_job=[all_batch_jobs[i]]
             else:
                 job_file=os.path.join(computation_dir,"job.sh")            
 
