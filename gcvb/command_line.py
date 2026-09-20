@@ -61,9 +61,11 @@ def parse():
     group = parser_compute.add_mutually_exclusive_group()
     group.add_argument("--by-batch", action="store_true", help="launch each test-batch as a separate job", default=False)
     group.add_argument("--by-test", action="store_true", help="launch each test as a separate job", default=False)
+    group.add_argument("--by-test-as-array", action="store_true", help="create a separate job script for each test without launching them and make the script files follow an array-like naming scheme", default=False)
     group = parser_compute.add_mutually_exclusive_group()
     group.add_argument("--header", metavar="file", help="use file as header when generating job script", default=None)
     group.add_argument("--local-header", action="store_true", help="use 'local_header' defined in configuration as header when generating job script. Here, it is assumed that the header file is present in job directory at launch. When multiple benchmarks are selected, the header corresponding to the first benchmarks is considered.", default=False)
+    group.add_argument("--array-launcher", metavar="file", help="use file to launch jobs when generating job scripts with `--by-test-as-array'", default=None)
     parser_compute.add_argument("--chain", action="store_true", help="stricter dependencies between tasks and validation")
     parser_compute.add_argument("--wait-after-submitting", action="store_true", help="wait for the submitted job to complete before submitting the next one", default=False)
     parser_compute.add_argument("--with-singularity", action="store_true", help="execute all commands in job script within a Singularity container")
@@ -231,7 +233,7 @@ def main():
             # Make the list of batch identifiers unique (multiple jobs may belong to a given batch).
             all_batch_jobs=list(dict.fromkeys([t["batch"] for t in all_tests]))
             nbr_batch_jobs=len(all_batch_jobs)
-        elif(args.by_test):
+        elif(args.by_test or args.by_test_as_array):
             all_batch_jobs=all_tests
             nbr_batch_jobs=len(all_batch_jobs)
 
@@ -245,25 +247,46 @@ def main():
             elif(args.by_test):
                 job_file=os.path.join(computation_dir,"{}.sh".format(all_batch_jobs[i]["id"]))
                 batch_job=[all_batch_jobs[i]]
+            elif(args.by_test_as_array):
+                job_file = os.path.join(computation_dir, f"job-{i}.sh")
+                batch_job = [all_batch_jobs[i]]
             else:
                 job_file=os.path.join(computation_dir,"job.sh")            
 
             db.add_tests(run_id, batch_job, args.chain)
 
             data_root=a["data_root"]
-            job.write_script(
-                batch_job, config, data_root, gcvb_id, run_id,
-                job_file=job_file, header=args.header,
-                local_header=config["local_header"] if args.local_header == True else None,
-                validate_only=args.validate_only,
-                singularity=args.with_singularity
-            )
 
-            if not(args.dry_run) and not(args.with_jobrunner):
+            if (args.by_test_as_array):
+                job.write_script(
+                    batch_job, config, data_root, gcvb_id, run_id,
+                    job_file=job_file, header=None,
+                    local_header=None,
+                    validate_only=args.validate_only,
+                    singularity=args.with_singularity
+                )
+            else:
+                job.write_script(
+                    batch_job, config, data_root, gcvb_id, run_id,
+                    job_file=job_file, header=args.header,
+                    local_header=config["local_header"] if args.local_header == True else None,
+                    validate_only=args.validate_only,
+                    singularity=args.with_singularity
+                )
+
+            if not(args.dry_run) and not(args.with_jobrunner) and not(args.by_test_as_array):
                 job.launch(job_file,config,args.validate_only,args.wait_after_submitting)
-            if (args.with_jobrunner):
+            elif (args.with_jobrunner):
                 j=jobrunner.JobRunner(args.with_jobrunner, run_id, config, args.started_first, args.max_concurrent, args.verbose)
                 j.run()
+
+        if (args.by_test_as_array and args.array_launcher is not None):
+            main_job_file = os.path.join(computation_dir, "array.sh")
+            template.apply_format_to_file(args.array_launcher, main_job_file, { "@job_max_id": (nbr_batch_jobs-1), "@gcvb_id": gcvb_id })
+            if not (args.dry_run) and not (args.with_jobrunner):
+                job.launch(main_job_file, config, args.validate_only, args.wait_after_submitting)
+            elif (args.with_jobrunner):
+                raise Error("Job runner cannot be used to run an array job")
 
     if args.command=="jobrunner":
         run_id,gcvb_id=db.get_last_run() #run chosen should be modifiable
